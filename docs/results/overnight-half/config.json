@@ -1,0 +1,50 @@
+{
+  "history": 48,
+  "horizons": [
+    24,
+    48
+  ],
+  "windows": [
+    4,
+    12,
+    24
+  ],
+  "backbones": [
+    "mlp",
+    "lstm",
+    "gru",
+    "darnn"
+  ],
+  "synthetic": [
+    "ar",
+    "sine",
+    "trend",
+    "nonlinear",
+    "damped",
+    "regime",
+    "periodic"
+  ],
+  "real": [
+    "electricity",
+    "traffic",
+    "solar",
+    "exchange"
+  ],
+  "real_variables": 3,
+  "data_root": "/Users/drorjac/PycharmProjects/multivariate-time-series-data",
+  "seeds": [
+    7,
+    17,
+    27
+  ],
+  "updates": 200,
+  "width": 32,
+  "batch_size": 32,
+  "stride": 12,
+  "train_limit": 2048,
+  "eval_limit": 128,
+  "contexts": false,
+  "weighted_losses": false,
+  "validate_every": 25,
+  "max_hours": 4
+}
