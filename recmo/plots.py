@@ -11,7 +11,7 @@ def summarize_results(root):
     rows = [json.loads(p.read_text()) for p in sorted((root/'jobs').glob('*/metrics.json'))]
     if not rows:
         return
-    columns = [key for key, value in rows[0].items() if not isinstance(value, list)]
+    columns = list(dict.fromkeys(key for row in rows for key, value in row.items() if not isinstance(value, list)))
     with (root/'metrics.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')
         writer.writeheader()

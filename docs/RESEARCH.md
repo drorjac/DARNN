@@ -51,3 +51,10 @@ No novelty, superiority, or statistical significance is presumed.
 References: [Qin et al., DA-RNN](https://arxiv.org/abs/1704.02971),
 [dataset collection](https://github.com/laiguokun/multivariate-time-series-data),
 and the papers already attributed in the historical README.
+
+Device selection is explicit and recorded in each new job. Existing configuration
+files continue to default to CPU. All neural inputs and parameters move to the
+selected accelerator; sampling and sensitivity noise use CPU-local generators
+then move the generated tensors, preserving a common random stream across
+backends. Backend differences still prevent exact cross-device reproducibility.
+Accelerator tests run conditionally on hosts with usable CUDA/MPS hardware.

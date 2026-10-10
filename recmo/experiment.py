@@ -1,9 +1,7 @@
 """Resumable comparisons with validation-only selection and incremental artifacts."""
 import argparse
 import copy
-import csv
 import hashlib
-import itertools
 import json
 import math
 import os
@@ -15,6 +13,7 @@ import torch
 
 from recmo.data import load_real, synthetic, split_windows
 from recmo.forecast import Forecaster, WindowLoss
+from recmo.devices import resolve_device, synchronize, device_info, cpu_state
 
 
 def neural_fit(model, loss_fn, splits, settings, seed, deadline):
@@ -29,7 +28,7 @@ def neural_fit(model, loss_fn, splits, settings, seed, deadline):
             raise TimeoutError('Run time budget reached; unfinished job will be retried on resume.')
         if step:
             model.train()
-            ids = torch.randint(len(x), (settings.get('batch_size', 32),), generator=generator)
+            ids = torch.randint(len(x), (settings.get('batch_size', 32),), generator=generator).to(x.device)
             optimizer.zero_grad(set_to_none=True)
             prediction, blocks = model(x[ids], return_blocks=True)
             # Primary uniform objective gives each time step equal weight, including partial windows.
@@ -81,7 +80,8 @@ def baseline_predictions(name, splits):
     return (test@weights).unsqueeze(-1), weights.numel()
 
 
-def run_job(job, series, settings, root, deadline):
+def run_job(job, series, settings, root, deadline, device=None):
+    device = resolve_device(settings.get('device', 'cpu')) if device is None else device
     torch.manual_seed(job['seed'])
     splits, metadata = split_windows(series, settings['history'], job['horizon'],
                                      settings.get('stride', 12), settings.get('train_limit', 2048),
@@ -96,24 +96,31 @@ def run_job(job, series, settings, root, deadline):
     if job['backbone'] in {'persistence', 'ridge'}:
         prediction, params = baseline_predictions(job['backbone'], splits)
         training_seconds = time.perf_counter()-started
+        execution = device_info(torch.device('cpu'))
         inference_ms = None  # Closed form fit+prediction not conflated with neural timing.
     else:
         model = Forecaster(job['backbone'], settings['history'], job['horizon'], job['strategy'],
-                           job['window'], job['context'], settings.get('width', 32))
-        loss_fn = WindowLoss(math.ceil(job['horizon']/model.window), job['loss'])
-        logs = neural_fit(model, loss_fn, splits, settings, job['seed'], deadline)
+                           job['window'], job['context'], settings.get('width', 32)).to(device)
+        loss_fn = WindowLoss(math.ceil(job['horizon']/model.window), job['loss']).to(device)
+        device_splits = {name: tuple(t.to(device) for t in pair) for name, pair in splits.items()}
+        logs = neural_fit(model, loss_fn, device_splits, settings, job['seed'], deadline)
+        synchronize(device)
         training_seconds = time.perf_counter()-started
+        execution = device_info(device)
         params = sum(p.numel() for p in model.parameters())
-        tx = splits['test'][0]
+        tx = device_splits['test'][0]
         with torch.no_grad():
             model(tx[:1])
+            synchronize(device)
             started = time.perf_counter()
             prediction = torch.cat([model(tx[i:i+32]) for i in range(0, len(tx), 32)])
+            synchronize(device)
             inference_ms = (time.perf_counter()-started)*1000/len(tx)
         from recmo.robustness import sensitivity
         (folder/'sensitivity.json').write_text(json.dumps(sensitivity(model, tx[:16]), indent=2))
-        torch.save({'model': model.state_dict(), 'loss': loss_fn.state_dict(),
+        torch.save({'model': cpu_state(model), 'loss': cpu_state(loss_fn), 'execution': execution,
                     'job': job, 'settings': settings, 'normalization': metadata}, folder/'checkpoint.pt')
+    prediction = prediction.detach().cpu()
     target = splits['test'][1]
     if not torch.isfinite(prediction).all():
         raise RuntimeError('Nonfinite test prediction.')
@@ -125,7 +132,7 @@ def run_job(job, series, settings, root, deadline):
                'lead_mse': lead.tolist(), 'window_mse': [float(np.mean(lead[i:i+window])) for i in range(0, len(lead), window)],
                'parameters': params, 'training_seconds': training_seconds, 'inference_ms_per_origin': inference_ms,
                'iterations': 1 if job['strategy']=='direct' else math.ceil(job['horizon']/window),
-               'test_origins': len(target), 'id': identity}
+               'test_origins': len(target), 'id': identity, **execution}
     (folder/'data.json').write_text(json.dumps(metadata, indent=2))
     (folder/'training.json').write_text(json.dumps(logs, indent=2))
     np.savez_compressed(folder/'predictions.npz', prediction=prediction.numpy()*metadata['scale']+metadata['mean'],
@@ -172,12 +179,23 @@ def main():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--summarize-only', action='store_true')
+    parser.add_argument('--device', help='cpu, auto, cuda, cuda:N, or mps; defaults to config device or cpu')
+    parser.add_argument('--data-root', type=Path, help='Override dataset location for this host')
+    parser.add_argument('--num-shards', type=int, default=1)
+    parser.add_argument('--shard-index', type=int, default=0)
     args = parser.parse_args()
     if args.summarize_only:
         summarize(args.output)
         return
+    if args.num_shards < 1 or not 0 <= args.shard_index < args.num_shards:
+        parser.error('Use positive num-shards and a shard-index between 0 and num-shards minus one.')
     torch.set_num_threads(1)
     config = json.loads(args.config.read_text())
+    if args.device is not None:
+        config['device'] = args.device
+    if args.data_root is not None:
+        config['data_root'] = str(args.data_root)
+    device = resolve_device(config.get('device', 'cpu'))
     args.output.mkdir(parents=True, exist_ok=True)
     saved_config = args.output/'config.json'
     if saved_config.exists() and json.loads(saved_config.read_text()) != config:
@@ -196,7 +214,15 @@ def main():
     if provenance_path.exists() and json.loads(provenance_path.read_text()) != provenance:
         raise ValueError('Source data changed; use a fresh output directory.')
     provenance_path.write_text(json.dumps(provenance, indent=2))
-    plan = make_plan(config, list(series))
+    full_plan = make_plan(config, list(series))
+    plan = full_plan[args.shard_index::args.num_shards]
+    execution = {**device_info(device), 'num_shards': args.num_shards, 'shard_index': args.shard_index, 'full_plan_jobs': len(full_plan)}
+    runtime_path = args.output/'execution.json'
+    if runtime_path.exists():
+        previous = json.loads(runtime_path.read_text())
+        if (previous['num_shards'], previous['shard_index'], previous['device']) != (args.num_shards, args.shard_index, str(device)):
+            raise ValueError('Device or shard changed; use a fresh output directory.')
+    runtime_path.write_text(json.dumps(execution, indent=2))
     (args.output/'plan.json').write_text(json.dumps(plan, indent=2))
     failures = []
     (args.output/'status.json').write_text(json.dumps({'running': True, 'pid': os.getpid(), 'planned': len(plan)}, indent=2))
@@ -204,7 +230,7 @@ def main():
         if time.monotonic() >= deadline:
             break
         try:
-            run_job(job, series[job['dataset']], config, args.output, deadline)
+            run_job(job, series[job['dataset']], config, args.output, deadline, device)
             completed = len(list((args.output/'jobs').glob('*/metrics.json')))
             (args.output/'status.json').write_text(json.dumps({'running': True, 'pid': os.getpid(), 'completed': completed, 'planned': len(plan), 'failures': len(failures)}, indent=2))
         except TimeoutError:

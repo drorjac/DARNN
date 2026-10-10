@@ -5,8 +5,8 @@ import torch
 def perturb(block, kind, magnitude=0.1):
     if kind == 'gaussian':
         # Fixed local noise keeps sensitivity evaluation reproducible across models.
-        generator = torch.Generator(device=block.device).manual_seed(101)
-        return block+magnitude*torch.randn(block.shape, generator=generator, device=block.device, dtype=block.dtype)
+        generator = torch.Generator().manual_seed(101)
+        return block+magnitude*torch.randn(block.shape, generator=generator, dtype=block.dtype).to(block.device)
     if kind == 'bias':
         return block+magnitude
     if kind == 'scale':

@@ -80,3 +80,15 @@ class WindowLoss(nn.Module):
             return (weights*losses+0.5*self.values.clamp(-10, 10)).sum()
         regularizer = 0.01*(weights*torch.log(weights*len(weights))).sum() if self.mode == 'softmax' else 0
         return (weights*losses).sum()+regularizer
+
+
+def load_checkpoint(path, device='cpu'):
+    """Restore a predictor on any available device; inputs use saved normalization."""
+    from recmo.devices import resolve_device
+    saved = torch.load(path, map_location='cpu', weights_only=True)
+    job, settings = saved['job'], saved['settings']
+    model = Forecaster(job['backbone'], settings['history'], job['horizon'],
+                       job['strategy'], job['window'], job['context'], settings.get('width', 32))
+    model.load_state_dict(saved['model'])
+    model.to(resolve_device(device)).eval()
+    return model, saved

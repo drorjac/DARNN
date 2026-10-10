@@ -57,3 +57,64 @@ python -m recmo.experiment --config configs/overnight.json \
 See [research protocol](docs/RESEARCH.md). End-to-end validation establishes
 correctness, not evidence that RecMO improves forecasts. Later propagation,
 feedback, refinement, and adaptive-window mechanisms remain separate phases.
+
+### CPU, CUDA, and Apple GPU execution
+
+Select a device using `--device cpu`, `--device cuda`, `--device cuda:1`,
+`--device mps`, or `--device auto`. Alternatively set `"device": "auto"` in
+configuration. `auto` prefers CUDA, then Apple MPS, then CPU. Omitting the option
+preserves the CPU default for existing runs. An explicit unavailable GPU request
+fails with a diagnostic rather than silently running on CPU. Install a PyTorch
+build compatible with the host OS and NVIDIA drivers when applicable; see the
+[PyTorch installation selector](https://pytorch.org/get-started/locally/),
+[CUDA notes](https://docs.pytorch.org/docs/stable/notes/cuda.html), and
+[MPS notes](https://docs.pytorch.org/docs/stable/notes/mps.html).
+
+```bash
+python -m recmo.experiment --config configs/overnight_half.json \
+  --output results/gpu --device cuda --data-root /path/to/multivariate-time-series-data
+```
+
+Models, loss parameters, and tensors use the chosen device. Persistence and ridge
+remain CPU baselines. Metrics record actual device, host, PyTorch version, and
+platform. GPU inference timing synchronizes before and after measurement and
+excludes copying results to the host. The measured interval includes batch
+iteration and forecast concatenation. Checkpoints store CPU tensors for portable
+restoration:
+
+```python
+from recmo.forecast import load_checkpoint
+model, saved = load_checkpoint('results/gpu/jobs/JOB_ID/checkpoint.pt', device='auto')
+# Standardize new histories with saved['normalization']['mean'] and ['scale'].
+# Move histories to next(model.parameters()).device before calling model.
+```
+
+Use a fresh output folder when changing devices or configuration. GPU and CPU
+results may differ numerically; hardware timings must be compared within the same
+host/device. Tiny recurrent models can be slower on accelerators. Unsupported
+backend operations are recorded as job failures; no silent CPU fallback is enabled.
+
+### Sharing a queue between computers
+
+Use the same Git commit, scientific configuration, and dataset files. Override
+only the device and dataset location as needed. Shard indices are zero-based:
+
+```bash
+# Machine A: first half of the queue
+python -m recmo.experiment --config configs/overnight_half.json \
+  --output results/machine-a --device cuda --num-shards 2 --shard-index 0 \
+  --data-root /path/to/multivariate-time-series-data
+
+# Machine B: second half, with its own output folder
+python -m recmo.experiment --config configs/overnight_half.json \
+  --output results/machine-b --device cpu --num-shards 2 --shard-index 1 \
+  --data-root /path/to/multivariate-time-series-data
+```
+
+Shards partition the deterministic job plan without duplicates and save their
+own plan and execution metadata. Resume using exactly the same shard arguments
+and output folder. Do not share a live output folder between workers. Collect
+completed job directories from disjoint shards into a separate analysis folder,
+then use `--summarize-only` there to generate a combined report. Keep the original
+configuration, provenance, plans, and execution metadata alongside the analysis;
+verify dataset hashes agree and retain device metadata for interpreting timing.
