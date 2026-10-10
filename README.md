@@ -25,3 +25,35 @@ This repository is used to obtain a baseline result for the following paper:
 - Traffic
 - Electricity
 - Exchange-Rate
+
+## RecMO research (PyTorch)
+
+The historical implementation above is preserved. The new framework compares
+univariate multi-step Direct MIMO, recursive one-step, RecMO, and DirMO using
+MLP, LSTM, GRU, and DA-RNN backbones, plus persistence and ridge regression.
+It includes rolling, expanding, and separately encoded prediction contexts;
+fixed, softmax, and uncertainty window objectives; seven synthetic generators;
+and explicit single-variable extraction from the four real datasets.
+
+```bash
+python -m pip install -e '.[test]'
+python -m pytest -q
+python -m recmo.experiment --config configs/smoke.json --output results/smoke
+python -m recmo.experiment --config configs/overnight.json --output results/overnight
+```
+
+Set `data_root` in each configuration to a local checkout of the linked dataset
+collection. The overnight run has an eight-hour budget and resumes completed
+jobs when rerun with the same configuration and output. Outputs include per-job
+checkpoints, forecasts, original-unit and normalized metrics, per-lead errors,
+learned weight histories, provenance, CSV summaries, and comparison figures.
+Regenerate a partial report while training continues:
+
+```bash
+python -m recmo.experiment --config configs/overnight.json \
+  --output results/overnight --summarize-only
+```
+
+See [research protocol](docs/RESEARCH.md). End-to-end validation establishes
+correctness, not evidence that RecMO improves forecasts. Later propagation,
+feedback, refinement, and adaptive-window mechanisms remain separate phases.

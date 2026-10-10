@@ -1,0 +1,1 @@
+{"history":12,"horizons":[12,24],"windows":[4,8],"backbones":["lstm","darnn"],"synthetic":["sine"],"real":["exchange"],"real_variables":1,"data_root":"/Users/drorjac/PycharmProjects/multivariate-time-series-data","seeds":[7],"updates":2,"width":8,"batch_size":4,"train_limit":32,"eval_limit":8,"synthetic_length":500,"contexts":true,"weighted_losses":true,"max_hours":0.15}
